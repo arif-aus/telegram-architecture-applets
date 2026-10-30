@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telegram-documentaries"
+version = "0.1.0"
+description = "A Telegram bot that turns your portrait into a narrated comedy wildlife documentary."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "python-telegram-bot==22.0",
+    "google-adk==2.11.0",
+    "pydantic==2.13.5",
+    "python-dotenv==1.2.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "ruff==0.16.2",
+    "mypy==2.3.0",
+]
+
+[project.scripts]
+telegram-documentaries = "telegram_documentaries.__main__:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+asyncio_mode = "auto"
+markers = [
+    "integration: live test against the real Gemini API (auto-skipped when GEMINI_API_KEY is absent)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+files = ["src", "tests"]
+strict = true
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false

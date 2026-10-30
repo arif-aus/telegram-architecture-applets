@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Pre-commit gate: lint, format check, type check, then the test suite.
+# The ground truth for hooks — see SPECS/TECH.md. Exits non-zero on any failure.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+echo "==> ruff check"
+ruff check .
+
+echo "==> ruff format --check"
+ruff format --check .
+
+echo "==> mypy"
+mypy
+
+echo "==> tests"
+scripts/test
+
+echo "==> hooks OK"

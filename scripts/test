@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Run the test suite (the ground truth for tests — see SPECS/TECH.md).
+#
+# Usage:
+#   scripts/test                 # whole suite; integration tests auto-skip
+#                                # when GEMINI_API_KEY is absent
+#   scripts/test -m integration  # live Gemini tests only (needs GEMINI_API_KEY)
+#   scripts/test -m "not integration"  # unit tests only, no network
+#
+# Any arguments are passed straight through to pytest.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+exec python -m pytest tests "$@"
