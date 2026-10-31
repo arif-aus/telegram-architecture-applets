@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 #: Bumped whenever the `SessionState` shape changes (ephemeral state dies with
 #: the process, so a bump simply invalidates anything written by older code).
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class Phase(StrEnum):
@@ -32,6 +32,11 @@ class SessionState(BaseModel):
     # Interview state — persists across each Q&A turn within AWAITING_INTERVIEW
     question_index: int = 0  # 0 = not started, 1-5 = answers received, 5 = complete
     responses: list[str] = []  # accumulated answers, one per question
+    # Completed dossier — handed from the Interviewer to the Converter/Scripter.
+    profile: str | None = None  # behavioural profile once the interview completes
+    suggested_animal: str | None = None  # animal emblem chosen by the Interviewer
+    # Original portrait photo bytes — stored so the Converter can fuse it with the animal archetype.
+    image_bytes: bytes | None = None  # set when a human photo is first received
 
 
 def normalise_chat_id(chat_id: int | str) -> int:

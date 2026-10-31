@@ -46,6 +46,7 @@ from the dossier.
 
 - **Acceptance:** word count and tone hold across multiple runs.
 - **Rubric:** structured generation.
+- **Complete:** Scripter agent implemented as Google ADK LlmAgent with Gemini 3.1 Flash Lite, producing one paragraph (max 90 words) of British documentary narration from the interview dossier, sent to user's Telegram chat.
 
 ## 6. Narrator
 

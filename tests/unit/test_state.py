@@ -19,7 +19,25 @@ def test_new_session_starts_in_awaiting_photo_with_versioned_schema() -> None:
     state = SessionState(chat_id=CHAT_A)
 
     assert state.phase is Phase.AWAITING_PHOTO
-    assert state.schema_version == 1
+    assert state.schema_version == 2
+
+
+def test_session_state_carries_the_interview_dossier() -> None:
+    state = SessionState(
+        chat_id=CHAT_A,
+        profile="A nocturnal biscuit archivist.",
+        suggested_animal="red panda",
+    )
+
+    assert state.profile == "A nocturnal biscuit archivist."
+    assert state.suggested_animal == "red panda"
+
+
+def test_session_state_dossier_defaults_to_none() -> None:
+    state = SessionState(chat_id=CHAT_A)
+
+    assert state.profile is None
+    assert state.suggested_animal is None
 
 
 def test_session_state_rejects_an_unknown_phase() -> None:

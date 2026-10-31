@@ -51,6 +51,18 @@ def test_build_application_wires_the_bouncer(
     assert application.bot_data["bouncer"] is bouncer_cls.return_value
 
 
+def test_build_application_wires_the_scripter(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scripter_cls = MagicMock()
+    monkeypatch.setattr(app_module, "ScripterService", scripter_cls)
+
+    application = build_application(settings)
+
+    scripter_cls.assert_called_once_with(api_key=settings.gemini_api_key)
+    assert application.bot_data["scripter"] is scripter_cls.return_value
+
+
 def test_main_fails_loudly_when_secrets_are_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

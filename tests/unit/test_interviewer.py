@@ -223,3 +223,42 @@ async def test_service_run_persists_state_across_turns(
     stored = store.get(CHAT_A)
     assert stored is not None
     assert stored.chat_id == CHAT_A
+
+
+async def test_service_run_persists_the_completed_dossier_to_the_shared_store(
+    mock_interviewer_runner: _MockRunner,
+) -> None:
+    """The finished profile and animal are available to the Scripter via state."""
+    service = InterviewerService(api_key=FAKE_KEY)
+
+    store = SessionStore()
+    store.set(
+        SessionState(
+            chat_id=CHAT_A,
+            phase=Phase.AWAITING_INTERVIEW,
+            question_index=4,
+            responses=["answer1", "answer2", "answer3", "answer4"],
+        )
+    )
+
+    mock_interviewer_runner._final_content = MagicMock(
+        parts=[
+            MagicMock(
+                text=json.dumps(
+                    {
+                        "profile": "A nocturnal biscuit archivist.",
+                        "suggested_animal": "red panda",
+                        "next_question": None,
+                    }
+                )
+            )
+        ]
+    )
+
+    with patch.object(service, "_runner", mock_interviewer_runner):
+        await service.run(user_text="answer5", chat_id=CHAT_A, store=store)
+
+    stored = store.get(CHAT_A)
+    assert stored is not None
+    assert stored.profile == "A nocturnal biscuit archivist."
+    assert stored.suggested_animal == "red panda"

@@ -45,7 +45,10 @@ never be committed.
 | Variable | Purpose |
 | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot API token |
-| `GEMINI_API_KEY` | Google Gemini API key |
+| `GEMINI_API_KEY` | Google Gemini API key — shared by the Bouncer, Interviewer, Converter, and Scripter |
+
+The Scripter introduces no new environment variables; it reuses
+`GEMINI_API_KEY`.
 
 ## Running the bot
 
@@ -57,18 +60,30 @@ telegram-documentaries
 
 The bot uses Telegram long polling, so no public URL or webhook is needed.
 
-### Current behaviour (Phase 1 gateway + Bouncer)
+### Current behaviour (through the Scripter)
 
 - `/start` and `/restart` reset the chat's session and greet.
 - A photo is checked by the **Bouncer** (Gemini 3.1 Flash Lite): a human
   portrait advances the session to `AWAITING_INTERVIEW`; anything else is
   cheekily rejected and the session is purged; a model failure asks the user to
   retry without losing state.
-- Ordinary text gets a hardcoded acknowledgement.
-- The Interviewer, Converter, Scripter, and Narrator are later phases.
+- The **Interviewer** asks five questions one at a time and writes the finished
+  dossier (behavioural profile + suggested animal) into the one shared session
+  state keyed by `chat_id`.
+- The **Converter** fuses the stored portrait with the suggested animal and
+  sends the hybrid image straight to the chat.
+- The **Scripter** (Gemini 3.1 Flash Lite) reads the dossier from shared state
+  and replies with exactly one plain-text paragraph (max 90 words) of dramatic
+  British documentary narration, framing the user's quirks, bedtime habits, and
+  snacking as animal behaviour. The text contains no markdown and is ready for
+  voice synthesis.
+- Ordinary text outside an active interview gets a hardcoded acknowledgement;
+  a Scripter failure is logged loudly without losing the image already sent.
+- The **Narrator** (Gemini TTS) is the next phase; the Scripter's paragraph is
+  its input.
 
-The gateway itself makes no API calls on startup; a Bouncer check is the only
-Gemini call made in this phase.
+The gateway itself makes no API calls on startup; Gemini calls happen only as
+the pipeline runs.
 
 ## Development scripts
 
@@ -86,11 +101,11 @@ scripts/test -m "not integration"      # unit only, explicitly
 RUN_LIVE_GEMINI_TESTS=1 scripts/test -m integration   # opt-in live Gemini tests
 ```
 
-Live tests in `tests/integration/` are marked `integration` and are **opt-in**:
-they run only when both `GEMINI_API_KEY` is set and `RUN_LIVE_GEMINI_TESTS=1`.
-Without the opt-in they are collected but skipped, so the default suite makes no
-network or API calls. `tests/conftest.py` loads the repository `.env` without
-overriding variables that are already set.
+Live Bouncer and Scripter tests in `tests/integration/` are marked `integration`
+and are **opt-in**: they run only when both `GEMINI_API_KEY` is set and
+`RUN_LIVE_GEMINI_TESTS=1`. Without the opt-in they are collected but skipped, so
+the default suite makes no network or API calls. `tests/conftest.py` loads the
+repository `.env` without overriding variables that are already set.
 
 ### `scripts/hooks`
 

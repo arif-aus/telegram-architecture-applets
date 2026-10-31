@@ -22,8 +22,10 @@ from telegram.ext import ContextTypes
 
 from telegram_documentaries.bouncer import BouncerDecision, BouncerService
 from telegram_documentaries.config import load_settings
+from telegram_documentaries.converter import ConverterService
 from telegram_documentaries.interviewer import InterviewerService
 from telegram_documentaries.logs import logged
+from telegram_documentaries.scripter import ScripterService
 from telegram_documentaries.state import Phase, SessionState, SessionStore
 
 logger = logging.getLogger(__name__)
@@ -148,10 +150,61 @@ async def acknowledge_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 return
 
             if output.profile is not None and output.suggested_animal is not None:
+                # Persist the completed dossier in the one shared store so later
+                # stages can read it without private state.
+                stored_state = store.get(chat.id)
+                if stored_state is not None:
+                    stored_state.profile = output.profile
+                    stored_state.suggested_animal = output.suggested_animal
+                    store.set(stored_state)
+
                 await message.reply_text(
                     f"{output.profile}\n\n"
                     f"Suggested animal for your documentary: {output.suggested_animal}"
                 )
+
+                # Invoke the Converter to fuse the photo with the animal archetype.
+                try:
+                    settings = load_settings()
+                    converter = ConverterService(api_key=settings.gemini_api_key)
+
+                    # Retrieve the stored portrait bytes from the session.
+                    stored_state = store.get(chat.id)
+                    image_bytes = stored_state.image_bytes if stored_state else None
+
+                    if image_bytes is None:
+                        logger.warning("event=converter_no_photo chat_id=%s", chat.id)
+                    else:
+                        converter_output = await converter.convert(
+                            image_bytes=image_bytes,
+                            profile=output.profile,
+                            suggested_animal=output.suggested_animal,
+                        )
+
+                        await message.reply_photo(
+                            photo=converter_output.image_data,
+                            caption=converter_output.caption,
+                        )
+
+                        # Invoke the Scripter to generate the documentary narrative.
+                        try:
+                            settings = load_settings()
+                            scripter = ScripterService(api_key=settings.gemini_api_key)
+
+                            scripter_output = await scripter.generate(
+                                chat_id=chat.id,
+                                store=store,
+                                profile=output.profile,
+                                suggested_animal=output.suggested_animal,
+                            )
+
+                            await message.reply_text(scripter_output.script)
+                        except Exception:
+                            logger.exception("event=scripter_failure chat_id=%s", chat.id)
+
+                except Exception:
+                    logger.exception("event=converter_failure chat_id=%s", chat.id)
+
                 return
         except Exception:
             logger.exception("event=interviewer_failure chat_id=%s", chat.id)
@@ -184,7 +237,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         _store(context).reset(chat.id)
         await message.reply_text(PHOTO_REJECTION)
     elif decision is BouncerDecision.ACCEPT:
-        _store(context).set(SessionState(chat_id=chat.id, phase=Phase.AWAITING_INTERVIEW))
+        _store(context).set(
+            SessionState(
+                chat_id=chat.id,
+                phase=Phase.AWAITING_INTERVIEW,
+                image_bytes=image_bytes,
+            )
+        )
         await message.reply_text(PHOTO_CONFIRMATION)
     else:
         # ERROR: state stays exactly as it was so the user can retry the same step.

@@ -200,6 +200,12 @@ class InterviewerService:
             # turn reads the correct values.
             state.question_index = getattr(result, "question_index", state.question_index)
             state.responses = getattr(result, "responses", state.responses)
+            # Persist the completed dossier so later stages (Converter, Scripter)
+            # can read it from the one shared store rather than private state.
+            if result.profile is not None:
+                state.profile = result.profile
+            if result.suggested_animal is not None:
+                state.suggested_animal = result.suggested_animal
             store.set(state)
 
             return result

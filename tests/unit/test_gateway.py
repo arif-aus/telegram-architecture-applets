@@ -87,7 +87,8 @@ async def test_plain_text_without_a_session_gets_the_hardcoded_acknowledgement()
 
 async def test_plain_text_does_not_touch_an_existing_session() -> None:
     store = SessionStore()
-    store.set(SessionState(chat_id=CHAT_A, phase=Phase.AWAITING_INTERVIEW))
+    # Interview complete: the text handler falls back without calling a model.
+    store.set(SessionState(chat_id=CHAT_A, phase=Phase.AWAITING_INTERVIEW, question_index=5))
     update = make_update()
     context = make_context(store)
 
