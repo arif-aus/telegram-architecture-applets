@@ -1,0 +1,78 @@
+# ROADMAP — The Telegram Documentaries
+
+One phase per pipeline capability, in build order. A phase is marked complete
+only when its acceptance criteria are verified.
+
+## 1. Repository and gateway
+
+Project skeleton, `.env` loading, and a long-polling loop that replies with a
+hardcoded message.
+
+- **Acceptance:** the bot answers in Telegram from a clean checkout with only
+  `.env` supplied.
+- **Rubric:** runnable entry point.
+
+## 2. Bouncer
+
+Vision gate on the uploaded portrait, with cheeky rejection and state reset
+for non-human images.
+
+- **Acceptance:** a human portrait advances to the Interviewer; anything else
+  is rejected and leaves no session residue.
+- **Rubric:** vision gate and rejection routing.
+
+## 3. Interviewer
+
+Sequential stateful Q&A — 5–7 questions, one at a time — ending in a dossier
+summary and a suggested animal. Doubles as the orchestrator.
+
+- **Acceptance:** a completed interview yields a dossier and an animal; state
+  survives between questions; wrong-payload input is handled gracefully.
+- **Rubric:** stateful multi-turn orchestration.
+
+## 4. Converter
+
+Native multimodal fusion of the original photo and the dossier into a hybrid
+animal portrait, sent straight to Telegram with no intermediate text hop.
+
+- **Acceptance:** the image reaches the chat, and no raw payload crosses the
+  module boundary.
+- **Rubric:** multimodal image generation.
+
+## 5. Scripter
+
+One paragraph of 60–90 words of dramatic British documentary narration built
+from the dossier.
+
+- **Acceptance:** word count and tone hold across multiple runs.
+- **Rubric:** structured generation.
+- **Complete:** Scripter agent implemented as Google ADK LlmAgent with Gemini 3.1 Flash Lite, producing one paragraph (max 90 words) of British documentary narration from the interview dossier, sent to user's Telegram chat.
+
+## 6. Narrator
+
+TTS synthesis of the script, rendered to a Telegram-compatible audio format
+(OGG or MP3) and delivered to the chat.
+
+- **Acceptance:** a voice note plays in Telegram from the Scripter's output.
+- **Rubric:** text-to-speech delivery.
+
+## 7. Resilience
+
+An explicit reset routine runs on `/start` and `/restart` without restarting the
+Python process. It must:
+
+1. **Cancel active sessions** — terminate any running interview loop or waiting
+   state for the requesting `chat_id`.
+2. **Purge ephemeral assets** — delete temporary media on disk (original photo,
+   converted PNG, generated OGG/MP3 voice files) recorded for that `chat_id`.
+3. **Re-initialise agent memory** — clear conversation history buffers and
+   reset the state tracker back to the greeting stage (`AWAITING_PHOTO`).
+
+The phase also covers wrong-payload-at-the-wrong-stage guards and API-timeout
+fallbacks.
+
+- **Acceptance:** reset cancels only the requesting chat's active work, deletes
+  its registered temporary files, returns it to the greeting stage, and leaves
+  no state residue — without restarting the process. Timeouts degrade gracefully
+  on the conversation path; nothing raises into the user's chat.
+- **Rubric:** reset semantics, per-chat isolation, and error handling.
