@@ -42,8 +42,10 @@
 
 - Versioned schema, keyed per `chat_id`.
 - One shared state driver. No stage owns private state.
-- `/start` and `/restart` purge session state and temporary media without
-  restarting the process.
+- `/start` and `/restart` run one explicit reset routine that (1) cancels the
+  chat's active session, (2) purges its registered temporary media, and
+  (3) re-initialises agent memory to the greeting stage — without restarting the
+  process.
 
 ## Testing
 

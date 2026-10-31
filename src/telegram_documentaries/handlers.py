@@ -25,6 +25,7 @@ from telegram_documentaries.config import load_settings
 from telegram_documentaries.converter import ConverterService
 from telegram_documentaries.interviewer import InterviewerService
 from telegram_documentaries.logs import logged
+from telegram_documentaries.reset import ActiveSessionRegistry, EphemeralAssetRegistry, reset_chat
 from telegram_documentaries.scripter import ScripterService
 from telegram_documentaries.state import Phase, SessionState, SessionStore
 
@@ -93,8 +94,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if message is None or chat is None:
         return
     store = _store(context)
-    store.reset(chat.id)
-    store.set(SessionState(chat_id=chat.id, phase=Phase.AWAITING_PHOTO))
+    sessions = _sessions(context)
+    assets = _assets(context)
+    _ = await reset_chat(chat.id, store=store, sessions=sessions, assets=assets)
     await message.reply_text(GREETING)
 
 
@@ -107,8 +109,9 @@ async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if message is None or chat is None:
         return
     store = _store(context)
-    store.reset(chat.id)
-    store.set(SessionState(chat_id=chat.id, phase=Phase.AWAITING_PHOTO))
+    sessions = _sessions(context)
+    assets = _assets(context)
+    _ = await reset_chat(chat.id, store=store, sessions=sessions, assets=assets)
     await message.reply_text(GREETING)
 
 
@@ -242,6 +245,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if decision is BouncerDecision.REJECT:
         _store(context).reset(chat.id)
+        _assets(context).purge(chat.id)
+        _ = await _sessions(context).cancel(chat.id)
         await message.reply_text(PHOTO_REJECTION)
     elif decision is BouncerDecision.ACCEPT:
         _store(context).set(
@@ -264,3 +269,11 @@ def _store(context: ContextTypes.DEFAULT_TYPE) -> SessionStore:
 
 def _bouncer(context: ContextTypes.DEFAULT_TYPE) -> BouncerService:
     return cast(BouncerService, context.bot_data["bouncer"])
+
+
+def _sessions(context: ContextTypes.DEFAULT_TYPE) -> ActiveSessionRegistry:
+    return cast(ActiveSessionRegistry, context.bot_data["sessions"])
+
+
+def _assets(context: ContextTypes.DEFAULT_TYPE) -> EphemeralAssetRegistry:
+    return cast(EphemeralAssetRegistry, context.bot_data["assets"])

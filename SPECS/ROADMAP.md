@@ -58,9 +58,21 @@ TTS synthesis of the script, rendered to a Telegram-compatible audio format
 
 ## 7. Resilience
 
-`/start` and `/restart` purge state and temporary files, wrong-payload-at-the-
-wrong-stage guards, and API-timeout fallbacks.
+An explicit reset routine runs on `/start` and `/restart` without restarting the
+Python process. It must:
 
-- **Acceptance:** reset leaves no state or temp files behind; timeouts degrade
-  gracefully on the conversation path; nothing raises into the user's chat.
-- **Rubric:** reset semantics and error handling.
+1. **Cancel active sessions** — terminate any running interview loop or waiting
+   state for the requesting `chat_id`.
+2. **Purge ephemeral assets** — delete temporary media on disk (original photo,
+   converted PNG, generated OGG/MP3 voice files) recorded for that `chat_id`.
+3. **Re-initialise agent memory** — clear conversation history buffers and
+   reset the state tracker back to the greeting stage (`AWAITING_PHOTO`).
+
+The phase also covers wrong-payload-at-the-wrong-stage guards and API-timeout
+fallbacks.
+
+- **Acceptance:** reset cancels only the requesting chat's active work, deletes
+  its registered temporary files, returns it to the greeting stage, and leaves
+  no state residue — without restarting the process. Timeouts degrade gracefully
+  on the conversation path; nothing raises into the user's chat.
+- **Rubric:** reset semantics, per-chat isolation, and error handling.

@@ -1,5 +1,6 @@
 """Handler wiring: after the Converter, the Scripter replies with the script (Phase 5)."""
 
+import asyncio
 import base64
 import json
 from collections.abc import AsyncIterator
@@ -13,6 +14,11 @@ from telegram_documentaries.config import Settings
 from telegram_documentaries.converter import ConverterOutput
 from telegram_documentaries.handlers import ACKNOWLEDGEMENT, acknowledge_text
 from telegram_documentaries.interviewer import InterviewerService, InterviewOutput
+from telegram_documentaries.reset import (
+    ActiveSessionRegistry,
+    EphemeralAssetRegistry,
+    reset_chat,
+)
 from telegram_documentaries.scripter import ScripterOutput
 from telegram_documentaries.state import Phase, SessionState, SessionStore
 
@@ -42,9 +48,18 @@ def make_update(text: str = "the final answer") -> MagicMock:
     return update
 
 
-def make_context(store: SessionStore) -> MagicMock:
+def make_context(
+    store: SessionStore,
+    *,
+    sessions: ActiveSessionRegistry | None = None,
+    assets: EphemeralAssetRegistry | None = None,
+) -> MagicMock:
     context = MagicMock()
-    context.bot_data = {"store": store}
+    context.bot_data = {
+        "store": store,
+        "sessions": sessions or ActiveSessionRegistry(),
+        "assets": assets or EphemeralAssetRegistry(),
+    }
     return context
 
 
@@ -391,3 +406,46 @@ async def test_text_outside_the_interview_flow_gets_the_acknowledgement(
 
     update.effective_message.reply_text.assert_awaited_once_with(ACKNOWLEDGEMENT)
     scripter.generate.assert_not_awaited()
+
+
+async def test_reset_mid_flight_aborts_before_committing_or_sending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _active_interview_store()
+    sessions = ActiveSessionRegistry()
+    assets = EphemeralAssetRegistry()
+    update = make_update()
+    context = make_context(store, sessions=sessions, assets=assets)
+    started = asyncio.Event()
+    never = asyncio.Event()
+
+    async def hang(*, user_text: str, chat_id: int, store: SessionStore) -> InterviewOutput:
+        del user_text, chat_id, store
+        started.set()
+        await never.wait()
+        return InterviewOutput(next_question="stale question")  # pragma: no cover
+
+    interviewer = MagicMock()
+    interviewer.run = AsyncMock(side_effect=hang)
+    _patch_services(
+        monkeypatch,
+        interviewer=interviewer,
+        converter=_successful_converter(),
+        scripter=_successful_scripter(),
+    )
+
+    handler_task = asyncio.create_task(acknowledge_text(update, context))
+    await started.wait()
+
+    await reset_chat(CHAT_A, store=store, sessions=sessions, assets=assets)
+    await asyncio.gather(handler_task, return_exceptions=True)
+
+    assert handler_task.cancelled()
+    state = store.get(CHAT_A)
+    assert state is not None
+    assert state.phase is Phase.AWAITING_PHOTO
+    assert state.responses == []
+    assert state.profile is None
+    assert state.image_bytes is None
+    update.effective_message.reply_text.assert_not_awaited()
+    update.effective_message.reply_photo.assert_not_awaited()

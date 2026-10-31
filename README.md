@@ -62,7 +62,10 @@ The bot uses Telegram long polling, so no public URL or webhook is needed.
 
 ### Current behaviour (through the Scripter)
 
-- `/start` and `/restart` reset the chat's session and greet.
+- `/start` and `/restart` run the explicit reset routine and greet: they cancel
+  any active session for that chat, delete its registered temporary media, and
+  re-initialise agent memory at the greeting stage, without restarting the
+  process.
 - A photo is checked by the **Bouncer** (Gemini 3.1 Flash Lite): a human
   portrait advances the session to `AWAITING_INTERVIEW`; anything else is
   cheekily rejected and the session is purged; a model failure asks the user to

@@ -42,8 +42,10 @@ Hard exclusions. No phase, spec, or implementation may add these:
 
 - **Happy path:** one portrait produces a hybrid image, a narration, and a
   voice note, end to end, with no manual intervention.
-- **Reset:** `/start` and `/restart` purge that user's session state and
-  temporary media without restarting the process.
+- **Reset:** `/start` and `/restart` run one explicit reset routine that cancels
+  that user's active session, purges their temporary media, clears their agent
+  memory, and returns them to the greeting stage — without restarting the
+  process.
 - **Out-of-order input:** text sent when media is expected, or media sent
   when text is expected, is handled gracefully and the conversation
   continues.

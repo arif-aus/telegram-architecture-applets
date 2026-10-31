@@ -16,6 +16,7 @@ from telegram_documentaries.config import Settings
 from telegram_documentaries.converter import ConverterService
 from telegram_documentaries.handlers import acknowledge_text, handle_photo, restart, start
 from telegram_documentaries.interviewer import InterviewerService
+from telegram_documentaries.reset import ActiveSessionRegistry, EphemeralAssetRegistry
 from telegram_documentaries.scripter import ScripterService
 from telegram_documentaries.state import SessionStore
 
@@ -33,6 +34,8 @@ def build_application(settings: Settings) -> ApplicationT:
     application.bot_data["interviewer"] = InterviewerService(api_key=settings.gemini_api_key)
     application.bot_data["converter"] = ConverterService(api_key=settings.gemini_api_key)
     application.bot_data["scripter"] = ScripterService(api_key=settings.gemini_api_key)
+    application.bot_data["sessions"] = ActiveSessionRegistry()
+    application.bot_data["assets"] = EphemeralAssetRegistry()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("restart", restart))

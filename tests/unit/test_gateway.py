@@ -1,9 +1,11 @@
 """Gateway behaviour: `/start`, `/restart`, text acknowledgement, no-raise policy (task group 3)."""
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import telegram_documentaries.handlers as handlers
 from telegram_documentaries.handlers import (
     ACKNOWLEDGEMENT,
     GRACEFUL_ERROR_TEXT,
@@ -12,9 +14,15 @@ from telegram_documentaries.handlers import (
     restart,
     start,
 )
+from telegram_documentaries.reset import (
+    ActiveSessionRegistry,
+    EphemeralAssetRegistry,
+    ResetOutcome,
+)
 from telegram_documentaries.state import Phase, SessionState, SessionStore
 
 CHAT_A = 111
+CHAT_B = 222
 
 
 def make_update(chat_id: int | None = CHAT_A) -> MagicMock:
@@ -28,10 +36,41 @@ def make_update(chat_id: int | None = CHAT_A) -> MagicMock:
     return update
 
 
-def make_context(store: SessionStore) -> MagicMock:
+def make_context(
+    store: SessionStore,
+    *,
+    sessions: ActiveSessionRegistry | None = None,
+    assets: EphemeralAssetRegistry | None = None,
+) -> MagicMock:
     context = MagicMock()
-    context.bot_data = {"store": store}
+    context.bot_data = {
+        "store": store,
+        "sessions": sessions or ActiveSessionRegistry(),
+        "assets": assets or EphemeralAssetRegistry(),
+    }
     return context
+
+
+def _populated_store(chat_id: int = CHAT_A) -> SessionStore:
+    store = SessionStore()
+    store.set(
+        SessionState(
+            chat_id=chat_id,
+            phase=Phase.AWAITING_INTERVIEW,
+            question_index=4,
+            responses=["answer1", "answer2", "answer3", "answer4"],
+            profile="A nocturnal biscuit archivist.",
+            suggested_animal="red panda",
+            image_bytes=b"portrait-bytes",
+        )
+    )
+    return store
+
+
+def _file(tmp_path: Path, name: str) -> Path:
+    path = tmp_path / name
+    path.write_bytes(b"ephemeral")
+    return path
 
 
 async def test_start_creates_a_fresh_session_and_greets() -> None:
@@ -72,6 +111,113 @@ async def test_restart_purges_and_regreets() -> None:
     assert state is not None
     assert state.phase is Phase.AWAITING_PHOTO
     update.effective_message.reply_text.assert_awaited_once_with(GREETING)
+
+
+@pytest.mark.parametrize("handler", [start, restart])
+async def test_reset_commands_call_the_shared_reset_routine(
+    handler: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SessionStore()
+    sessions = ActiveSessionRegistry()
+    assets = EphemeralAssetRegistry()
+    context = make_context(store, sessions=sessions, assets=assets)
+    update = make_update()
+    reset_mock = AsyncMock(
+        return_value=ResetOutcome(
+            chat_id=CHAT_A,
+            cancelled_sessions=0,
+            deleted_assets=0,
+            phase=Phase.AWAITING_PHOTO,
+        )
+    )
+    monkeypatch.setattr(handlers, "reset_chat", reset_mock)
+
+    await handler(update, context)  # type: ignore[operator]
+
+    reset_mock.assert_awaited_once_with(
+        CHAT_A,
+        store=store,
+        sessions=sessions,
+        assets=assets,
+    )
+    update.effective_message.reply_text.assert_awaited_once_with(GREETING)
+
+
+async def test_start_clears_the_full_interview_dossier_and_purges_temp_media(
+    tmp_path: Path,
+) -> None:
+    store = _populated_store()
+    sessions = ActiveSessionRegistry()
+    token = sessions.begin(CHAT_A)
+    assets = EphemeralAssetRegistry()
+    portrait = _file(tmp_path, "portrait.jpg")
+    assets.add(CHAT_A, portrait)
+    update = make_update()
+    context = make_context(store, sessions=sessions, assets=assets)
+
+    await start(update, context)
+
+    state = store.get(CHAT_A)
+    assert state is not None
+    assert state.phase is Phase.AWAITING_PHOTO
+    assert state.question_index == 0
+    assert state.responses == []
+    assert state.profile is None
+    assert state.suggested_animal is None
+    assert state.image_bytes is None
+    assert sessions.is_active(token) is False
+    assert portrait.exists() is False
+    update.effective_message.reply_text.assert_awaited_once_with(GREETING)
+
+
+async def test_restart_clears_progress_and_purges_temp_media(tmp_path: Path) -> None:
+    store = _populated_store()
+    assets = EphemeralAssetRegistry()
+    portrait = _file(tmp_path, "portrait.jpg")
+    assets.add(CHAT_A, portrait)
+    update = make_update()
+    context = make_context(store, assets=assets)
+
+    await restart(update, context)
+
+    state = store.get(CHAT_A)
+    assert state is not None
+    assert state.phase is Phase.AWAITING_PHOTO
+    assert state.responses == []
+    assert state.profile is None
+    assert state.image_bytes is None
+    assert portrait.exists() is False
+    update.effective_message.reply_text.assert_awaited_once_with(GREETING)
+
+
+async def test_start_resets_only_the_requesting_chat(tmp_path: Path) -> None:
+    store = _populated_store(CHAT_A)
+    store.set(
+        SessionState(
+            chat_id=CHAT_B,
+            phase=Phase.AWAITING_INTERVIEW,
+            question_index=2,
+            responses=["answer1", "answer2"],
+        )
+    )
+    sessions = ActiveSessionRegistry()
+    token_b = sessions.begin(CHAT_B)
+    assets = EphemeralAssetRegistry()
+    theirs = _file(tmp_path, "theirs.png")
+    assets.add(CHAT_B, theirs)
+    update = make_update(chat_id=CHAT_A)
+    context = make_context(store, sessions=sessions, assets=assets)
+
+    await start(update, context)
+
+    other = store.get(CHAT_B)
+    assert other is not None
+    assert other.phase is Phase.AWAITING_INTERVIEW
+    assert other.question_index == 2
+    assert other.responses == ["answer1", "answer2"]
+    assert sessions.is_active(token_b) is True
+    assert theirs.exists() is True
 
 
 async def test_plain_text_without_a_session_gets_the_hardcoded_acknowledgement() -> None:

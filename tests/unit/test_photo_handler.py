@@ -1,5 +1,6 @@
 """Photo handler: download the largest size, ask the Bouncer, route the verdict (task group 5)."""
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,6 +13,7 @@ from telegram_documentaries.handlers import (
     PHOTO_RETRY,
     handle_photo,
 )
+from telegram_documentaries.reset import ActiveSessionRegistry, EphemeralAssetRegistry
 from telegram_documentaries.state import Phase, SessionState, SessionStore
 
 CHAT_A = 111
@@ -49,6 +51,9 @@ def make_update(
 def make_context(
     store: SessionStore,
     decision: BouncerDecision | Exception,
+    *,
+    sessions: ActiveSessionRegistry | None = None,
+    assets: EphemeralAssetRegistry | None = None,
 ) -> MagicMock:
     bouncer = MagicMock()
     if isinstance(decision, Exception):
@@ -56,7 +61,12 @@ def make_context(
     else:
         bouncer.decide = AsyncMock(return_value=decision)
     context = MagicMock()
-    context.bot_data = {"store": store, "bouncer": bouncer}
+    context.bot_data = {
+        "store": store,
+        "bouncer": bouncer,
+        "sessions": sessions or ActiveSessionRegistry(),
+        "assets": assets or EphemeralAssetRegistry(),
+    }
     return context
 
 
@@ -143,6 +153,38 @@ async def test_photo_handler_rejection_only_purges_the_sending_chats_state() -> 
     other = store.get(CHAT_B)
     assert other is not None
     assert other.phase is Phase.AWAITING_INTERVIEW
+
+
+async def test_photo_handler_rejection_purges_assets_and_sessions_for_that_chat_only(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore()
+    store.set(SessionState(chat_id=CHAT_A, phase=Phase.AWAITING_PHOTO))
+    store.set(SessionState(chat_id=CHAT_B, phase=Phase.AWAITING_INTERVIEW))
+    sessions = ActiveSessionRegistry()
+    stale_a = sessions.begin(CHAT_A)
+    active_b = sessions.begin(CHAT_B)
+    assets = EphemeralAssetRegistry()
+    mine = tmp_path / "mine.png"
+    theirs = tmp_path / "theirs.png"
+    mine.write_bytes(b"mine")
+    theirs.write_bytes(b"theirs")
+    assets.add(CHAT_A, mine)
+    assets.add(CHAT_B, theirs)
+    update = make_update([make_photo_size(640, 480, b"landscape")], chat_id=CHAT_A)
+    context = make_context(store, BouncerDecision.REJECT, sessions=sessions, assets=assets)
+
+    await handle_photo(update, context)
+
+    assert store.get(CHAT_A) is None
+    assert mine.exists() is False
+    assert sessions.is_active(stale_a) is False
+    other = store.get(CHAT_B)
+    assert other is not None
+    assert other.phase is Phase.AWAITING_INTERVIEW
+    assert theirs.exists() is True
+    assert sessions.is_active(active_b) is True
+    update.effective_message.reply_text.assert_awaited_once_with(PHOTO_REJECTION)
 
 
 async def test_photo_handler_error_never_touches_another_chats_state() -> None:
