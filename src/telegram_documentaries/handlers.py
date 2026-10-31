@@ -139,8 +139,12 @@ async def acknowledge_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         try:
             settings = load_settings()
             interviewer = InterviewerService(api_key=settings.gemini_api_key)
+            # The very first text after the photo triggers the kick-off turn;
+            # only later messages are answers to an outstanding question.
+            first_turn = state.question_index == 0 and not state.responses
+            user_text = "start" if first_turn else (message.text or "")
             output = await interviewer.run(
-                user_text=(update.effective_message.text or ""),  # type: ignore[union-attr]
+                user_text=user_text,
                 chat_id=chat.id,
                 store=store,
             )
@@ -181,8 +185,9 @@ async def acknowledge_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                             suggested_animal=output.suggested_animal,
                         )
 
+                        # The model returns base64 text; Telegram needs PNG bytes.
                         await message.reply_photo(
-                            photo=converter_output.image_data,
+                            photo=converter_output.image_bytes,
                             caption=converter_output.caption,
                         )
 
@@ -208,6 +213,8 @@ async def acknowledge_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 return
         except Exception:
             logger.exception("event=interviewer_failure chat_id=%s", chat.id)
+            await message.reply_text(GRACEFUL_ERROR_TEXT)
+            return
 
     # Fallback: Phase 1 acknowledgement (or after interview complete).
     await message.reply_text(ACKNOWLEDGEMENT)

@@ -9,13 +9,16 @@ Model: Gemini 3.1 Flash Image (multimodal).
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
+import re
 
 from google.adk.agents import LlmAgent
 from google.adk.models.google_llm import Gemini
 from google.adk.runners import InMemoryRunner
 from google.genai import types
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -31,15 +34,52 @@ APP_NAME = "telegram_documentaries"
 # ---------------------------------------------------------------------------
 
 
-class ConverterOutput(BaseModel):
-    """Typed answer from the Converter agent — the contract across the boundary."""
+def _decode_image_data(image_data: str) -> bytes:
+    """Decode the model's base64 image payload into raw PNG bytes.
 
-    image_data: bytes = Field(
+    Gemini returns the image as base64 text, sometimes wrapped in a data URI
+    and/or line breaks. Telegram needs actual bytes, so normalise the payload
+    and fail loudly if it is not valid base64 — never send base64 text to the
+    Bot API in place of a PNG.
+    """
+    payload = image_data.strip()
+    if payload.startswith("data:"):
+        _, _, payload = payload.partition(",")
+    payload = re.sub(r"\s+", "", payload)
+    if not payload:
+        raise ValueError("empty image data")
+    try:
+        return base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("image_data must be valid base64-encoded image bytes") from exc
+
+
+class ConverterOutput(BaseModel):
+    """Typed answer from the Converter agent — the contract across the boundary.
+
+    ``image_data`` stays as the base64 text the model produced; use
+    :attr:`image_bytes` to get the decoded bytes Telegram expects. In-process
+    callers may supply raw bytes and they are normalised to base64.
+    """
+
+    image_data: str = Field(
         description="Base64-encoded PNG data of the hybrid animal portrait.",
     )
     caption: str = Field(
         description="Short caption describing the result, e.g. 'Behold the caffeinated badger'.",
     )
+
+    @field_validator("image_data", mode="before")
+    @classmethod
+    def _normalise_raw_bytes(cls, value: object) -> object:
+        if isinstance(value, (bytes, bytearray)):
+            return base64.b64encode(bytes(value)).decode("ascii")
+        return value
+
+    @property
+    def image_bytes(self) -> bytes:
+        """The decoded PNG bytes ready for Telegram's ``sendPhoto``."""
+        return _decode_image_data(self.image_data)
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +238,13 @@ class ConverterService:
             try:
                 result = ConverterOutput.model_validate_json(raw_text)
             except ValidationError as exc:
+                raise RuntimeError(f"unparsable converter output: {exc}") from exc
+
+            # Validate the payload at the boundary so a malformed image is a
+            # loud converter failure, not an opaque Telegram upload error.
+            try:
+                _decode_image_data(result.image_data)
+            except ValueError as exc:
                 raise RuntimeError(f"unparsable converter output: {exc}") from exc
 
             return result

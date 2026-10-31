@@ -29,6 +29,9 @@ MODEL = "gemini-3.1-flash-lite"
 #: ADK application name shared by the runner and its session service.
 APP_NAME = "telegram_documentaries"
 
+#: The interview is complete once this many answers have been recorded.
+MAX_QUESTIONS = 5
+
 
 #: The output contract for the Interviewer agent.
 class InterviewOutput(BaseModel):
@@ -92,8 +95,13 @@ Rules:
 """
 
 # ---------------------------------------------------------------------------
-# Helper: build the Content the agent receives each turn.
+# Helpers: start detection and the Content the agent receives each turn.
 # ---------------------------------------------------------------------------
+
+
+def _is_start_marker(user_text: str) -> bool:
+    """True for the synthetic kick-off text (or an empty message)."""
+    return user_text.strip().lower() in {"", "start", "/start", "/restart"}
 
 
 def _build_content(user_text: str, state: SessionState) -> types.Content:
@@ -165,6 +173,30 @@ class InterviewerService:
             logger.warning("event=interviewer.no_session chat_id=%s", chat_id)
             state = SessionState(chat_id=chat_id, phase=Phase.AWAITING_INTERVIEW)
 
+        # The store hands back the live object; work on a copy so a failed model
+        # call cannot leave a half-applied answer behind.
+        state = state.model_copy(deep=True)
+
+        # Terminal guard: a finished interview never calls the model again, and
+        # late messages must not be appended to the dossier.
+        if state.question_index >= MAX_QUESTIONS or len(state.responses) >= MAX_QUESTIONS:
+            logger.info("event=interviewer.already_complete chat_id=%s", chat_id)
+            return InterviewOutput(
+                profile=state.profile,
+                suggested_animal=state.suggested_animal,
+            )
+
+        # The synthetic first turn only asks question 1; it is not itself an
+        # answer. Every later answer is recorded before the model is called so
+        # the dossier it sees is current. An actual first message is treated as
+        # an answer (defensive: some callers skip the "start" kick-off).
+        starting = state.question_index == 0 and not state.responses
+        if starting and _is_start_marker(user_text):
+            pass
+        else:
+            state.responses = [*state.responses, user_text]
+            state.question_index = min(len(state.responses), MAX_QUESTIONS)
+
         # Build the content the agent will read — user text + current state.
         content = _build_content(user_text, state)
 
@@ -194,20 +226,45 @@ class InterviewerService:
             except ValidationError as exc:
                 raise RuntimeError(f"unparsable interviewer output: {exc}") from exc
 
-            # Persist the updated state back to the shared store.
-            # The handler has already incremented question_index and appended
-            # the user's response, so we just write the state back so the next
-            # turn reads the correct values.
-            state.question_index = getattr(result, "question_index", state.question_index)
-            state.responses = getattr(result, "responses", state.responses)
             # Persist the completed dossier so later stages (Converter, Scripter)
             # can read it from the one shared store rather than private state.
             if result.profile is not None:
                 state.profile = result.profile
             if result.suggested_animal is not None:
                 state.suggested_animal = result.suggested_animal
-            store.set(state)
 
+            if len(state.responses) >= MAX_QUESTIONS:
+                # The fifth answer is terminal only if the model produced both
+                # profile and suggested_animal. Otherwise do NOT commit a
+                # terminal state - let the user retry.
+                if state.profile is not None and state.suggested_animal is not None:
+                    state.question_index = MAX_QUESTIONS
+                    if result.next_question is not None:
+                        logger.error(
+                            "event=interviewer.question_after_completion chat_id=%s",
+                            chat_id,
+                        )
+                    result = InterviewOutput(
+                        next_question=None,
+                        profile=state.profile,
+                        suggested_animal=state.suggested_animal,
+                    )
+                else:
+                    logger.error(
+                        "event=interviewer.incomplete_dossier_after_fifth_answer "
+                        "chat_id=%s profile_present=%s animal_present=%s",
+                        chat_id,
+                        state.profile is not None,
+                        state.suggested_animal is not None,
+                    )
+                    raise RuntimeError(
+                        "interviewer did not produce complete dossier after fifth answer"
+                    )
+            elif state.question_index == 0:
+                # The first question has now been asked; this chat is in progress.
+                state.question_index = 1
+
+            store.set(state)
             return result
 
         finally:

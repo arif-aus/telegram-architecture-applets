@@ -105,8 +105,13 @@ class _MockRunner:
         self.session_service.create_session = AsyncMock(return_value=MagicMock(id="session-1"))
         self.session_service.delete_session = AsyncMock()
         self._final_content: MagicMock | None = None
+        self.new_messages: list[Any] = []
+        self.run_error: Exception | None = None
 
     async def run_async(self, **kwargs: Any) -> Any:
+        self.new_messages.append(kwargs.get("new_message"))
+        if self.run_error is not None:
+            raise self.run_error
         if self._final_content is None:
             raise RuntimeError("no final content set on mock runner")
         ev = MagicMock()
@@ -152,10 +157,10 @@ async def test_service_run_asks_first_question(
     assert output.suggested_animal is None
 
 
-async def test_service_run_advances_through_questions(
+async def test_service_run_advances_the_state_machine_each_turn(
     mock_interviewer_runner: _MockRunner,
 ) -> None:
-    """After each answer, the next question is returned, incrementing question_index."""
+    """The service, not the caller, appends answers and advances question_index."""
     service = InterviewerService(api_key=FAKE_KEY)
 
     store = SessionStore()
@@ -163,39 +168,120 @@ async def test_service_run_advances_through_questions(
         SessionState(chat_id=CHAT_A, phase=Phase.AWAITING_INTERVIEW, question_index=0, responses=[])
     )
 
-    responses: list[dict[str, str | None]] = [
-        {"next_question": "Question 1: What's your secret superpower?"},
-        {"next_question": "Question 2: If you were a zoo animal, which would you be?"},
-        {"next_question": "Question 3: What's the weirdest food you've ever eaten?"},
-        {"next_question": "Question 4: Describe your most embarrassing moment."},
-        {"profile": "You love animals", "suggested_animal": "otter", "next_question": None},
-    ]
+    questions = [f"Question {i}" for i in range(1, 6)]
+    answers = [f"answer{i}" for i in range(1, 6)]
 
-    for i, expected in enumerate(responses):
-        existing = store.get(CHAT_A)
-        assert existing is not None
-        existing.question_index = i
-        existing.responses = [f"answer{j + 1}" for j in range(i)]
-        store.set(existing)
+    # The first turn starts the interview but is not itself an answer.
+    mock_interviewer_runner._final_content = MagicMock(
+        parts=[MagicMock(text=json.dumps({"next_question": questions[0]}))]
+    )
+    with patch.object(service, "_runner", mock_interviewer_runner):
+        output = await service.run(user_text="start", chat_id=CHAT_A, store=store)
 
+    assert output.next_question == questions[0]
+    stored = store.get(CHAT_A)
+    assert stored is not None
+    assert stored.responses == []
+    assert stored.question_index == 1
+
+    # Each answer is recorded by the service before the next question is asked.
+    for index, (answer, next_question) in enumerate(
+        zip(answers[:4], questions[1:], strict=True), start=1
+    ):
         mock_interviewer_runner._final_content = MagicMock(
-            parts=[MagicMock(text=json.dumps(expected))]
+            parts=[MagicMock(text=json.dumps({"next_question": next_question}))]
         )
-
         with patch.object(service, "_runner", mock_interviewer_runner):
-            output = await service.run(
-                user_text=f"answer{i + 1}" if i < 5 else "answer5",
-                chat_id=CHAT_A,
-                store=store,
+            output = await service.run(user_text=answer, chat_id=CHAT_A, store=store)
+
+        assert output.next_question == next_question
+        stored = store.get(CHAT_A)
+        assert stored is not None
+        assert stored.responses == answers[:index]
+        assert stored.question_index == index
+
+    # The fifth answer is terminal: profile + animal, no further question.
+    mock_interviewer_runner._final_content = MagicMock(
+        parts=[
+            MagicMock(
+                text=json.dumps(
+                    {
+                        "profile": "You love animals",
+                        "suggested_animal": "otter",
+                        "next_question": None,
+                    }
+                )
             )
+        ]
+    )
+    with patch.object(service, "_runner", mock_interviewer_runner):
+        output = await service.run(user_text=answers[4], chat_id=CHAT_A, store=store)
 
-        assert output.next_question == expected["next_question"], f"Failed at turn {i}"
+    assert output.next_question is None
+    stored = store.get(CHAT_A)
+    assert stored is not None
+    assert stored.responses == answers
+    assert stored.question_index == 5
+    assert stored.profile == "You love animals"
+    assert stored.suggested_animal == "otter"
 
-    # After 5 answers, profile/animal should be set and next_question is None
-    profile_val = responses[-1]["profile"]
-    animal_val = responses[-1]["suggested_animal"]
-    assert profile_val is not None
-    assert animal_val is not None
+
+async def test_service_run_is_terminal_once_five_answers_are_received(
+    mock_interviewer_runner: _MockRunner,
+) -> None:
+    """A completed interview never calls the model again or records late text."""
+    service = InterviewerService(api_key=FAKE_KEY)
+
+    store = SessionStore()
+    store.set(
+        SessionState(
+            chat_id=CHAT_A,
+            phase=Phase.AWAITING_INTERVIEW,
+            question_index=5,
+            responses=["answer1", "answer2", "answer3", "answer4", "answer5"],
+            profile="A nocturnal biscuit archivist.",
+            suggested_animal="red panda",
+        )
+    )
+
+    with patch.object(service, "_runner", mock_interviewer_runner):
+        output = await service.run(user_text="one answer too many", chat_id=CHAT_A, store=store)
+
+    assert output.next_question is None
+    assert output.profile == "A nocturnal biscuit archivist."
+    assert output.suggested_animal == "red panda"
+    mock_interviewer_runner.session_service.create_session.assert_not_awaited()
+    stored = store.get(CHAT_A)
+    assert stored is not None
+    assert stored.question_index == 5
+    assert len(stored.responses) == 5
+
+
+async def test_service_run_does_not_advance_state_when_the_model_fails(
+    mock_interviewer_runner: _MockRunner,
+) -> None:
+    """A failed model call leaves the last good question/answer state untouched."""
+    service = InterviewerService(api_key=FAKE_KEY)
+
+    store = SessionStore()
+    store.set(
+        SessionState(
+            chat_id=CHAT_A,
+            phase=Phase.AWAITING_INTERVIEW,
+            question_index=2,
+            responses=["answer1", "answer2"],
+        )
+    )
+    mock_interviewer_runner.run_error = RuntimeError("model exploded")
+
+    with patch.object(service, "_runner", mock_interviewer_runner):
+        with pytest.raises(RuntimeError, match="model exploded"):
+            await service.run(user_text="answer3", chat_id=CHAT_A, store=store)
+
+    stored = store.get(CHAT_A)
+    assert stored is not None
+    assert stored.question_index == 2
+    assert stored.responses == ["answer1", "answer2"]
 
 
 async def test_service_run_persists_state_across_turns(

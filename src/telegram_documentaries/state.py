@@ -30,7 +30,7 @@ class SessionState(BaseModel):
     chat_id: int
     phase: Phase = Phase.AWAITING_PHOTO
     # Interview state — persists across each Q&A turn within AWAITING_INTERVIEW
-    question_index: int = 0  # 0 = not started, 1-5 = answers received, 5 = complete
+    question_index: int = 0  # 0 = not started, 1-5 = progress, 5 = complete
     responses: list[str] = []  # accumulated answers, one per question
     # Completed dossier — handed from the Interviewer to the Converter/Scripter.
     profile: str | None = None  # behavioural profile once the interview completes
